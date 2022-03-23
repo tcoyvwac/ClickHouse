@@ -67,7 +67,8 @@ def get_images_with_versions(
                     logging.info("Got execption pulling docker %s", ex)
             else:
                 raise Exception(
-                    f"Cannot pull dockerhub for image docker pull {docker_image} because of {latest_error}"
+                    "Cannot pull dockerhub for image docker pull "
+                    f"{docker_image} because of {str(latest_error)}"
                 )
 
     return docker_images
