@@ -111,11 +111,9 @@ def build_and_push_image(
 
     # `docker buildx build --load` does not support multiple images currently
     # images must be built separately and merged together with `docker manifest`
-    tags = [tag]
     digests = []
     for arch in BUCKETS:
         arch_tag = f"{tag}-{arch}"
-        tags.append(arch_tag)
         metadata_path = p.join(TEMP_PATH, arch_tag)
         dockerfile = p.join(image.full_path, f"Dockerfile.{os}")
         cmd_args = list(init_args)
@@ -132,7 +130,7 @@ def build_and_push_image(
             ]
         )
         cmd = " ".join(cmd_args)
-        logging.info("running: %s", cmd)
+        logging.info("Building image %s:%s for arch %s: %s", image.repo, tag, arch, cmd)
         with subprocess.Popen(
             cmd,
             shell=True,
@@ -155,7 +153,7 @@ def build_and_push_image(
             "docker buildx imagetools create "
             f"--tag {image.repo}:{tag} {' '.join(digests)}"
         )
-        logging.info("running: %s", cmd)
+        logging.info("Pushing merged %s:%s image: %s", image.repo, tag, cmd)
         with subprocess.Popen(
             cmd,
             shell=True,
@@ -168,6 +166,12 @@ def build_and_push_image(
             retcode = process.wait()
             if retcode != 0:
                 result.append((f"{image.repo}:{tag}", "FAIL"))
+    else:
+        logging.info(
+            "Merging is available only on push, separate %s images are created",
+            f"{image.repo}:{tag}-$arch",
+        )
+
     return result
 
 
@@ -238,6 +242,7 @@ def main():
         )
     image = DockerImage(args.image_path, args.image_repo, False)
     tags = gen_tags(args.version, args.release_type)
+    logging.info("Following tags will be created: %s", ", ".join(tags))
     for os in args.os:
         for tag in tags:
             build_and_push_image(
