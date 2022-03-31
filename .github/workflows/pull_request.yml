@@ -1006,11 +1006,6 @@ jobs:
       - BuilderDebAarch64
     runs-on: [self-hosted, style-checker]
     steps:
-      - name: Set envs
-        run: |
-          cat >> "$GITHUB_ENV" << 'EOF'
-          TEMP_PATH=${{runner.temp}}
-          EOF
       - name: Clear repository
         run: |
           sudo rm -fr "$GITHUB_WORKSPACE" && mkdir "$GITHUB_WORKSPACE"
@@ -1020,7 +1015,6 @@ jobs:
           fetch-depth: 0  # otherwise we will have no version info
       - name: Check docker clickhouse/clickhouse-server building
         run: |
-          sudo rm -fr "$TEMP_PATH"
           cd "$GITHUB_WORKSPACE/tests/ci"
           python3 build_report_check.py --release-type head --no-push
       - name: Cleanup
