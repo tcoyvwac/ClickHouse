@@ -1016,7 +1016,7 @@ jobs:
       - name: Check docker clickhouse/clickhouse-server building
         run: |
           cd "$GITHUB_WORKSPACE/tests/ci"
-          python3 build_report_check.py --release-type head --no-push
+          python3 docker_server.py --release-type head --no-push
       - name: Cleanup
         if: always()
         run: |
