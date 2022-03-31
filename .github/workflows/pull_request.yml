@@ -1022,7 +1022,7 @@ jobs:
         run: |
           sudo rm -fr "$TEMP_PATH"
           cd "$GITHUB_WORKSPACE/tests/ci"
-          python3 build_report_check.py --release-type head
+          python3 build_report_check.py --release-type head --no-push
       - name: Cleanup
         if: always()
         run: |
