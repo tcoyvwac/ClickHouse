@@ -4,7 +4,7 @@ env:
   # Force the stdout and stderr streams to be unbuffered
   PYTHONUNBUFFERED: 1
 
-on: # yamllint disable-line rule:truthy
+on:  # yamllint disable-line rule:truthy
   pull_request:
     types:
       - synchronize
@@ -997,6 +997,38 @@ jobs:
           docker kill "$(docker ps -q)" ||:
           docker rm -f "$(docker ps -a -q)" ||:
           sudo rm -fr "$TEMP_PATH" "$CACHES_PATH"
+############################################################################################
+##################################### Docker images  #######################################
+############################################################################################
+  DockerServerImages:
+    needs:
+      - BuilderDebRelease
+      - BuilderDebAarch64
+    runs-on: [self-hosted, style-checker]
+    steps:
+      - name: Set envs
+        run: |
+          cat >> "$GITHUB_ENV" << 'EOF'
+          TEMP_PATH=${{runner.temp}}
+          EOF
+      - name: Clear repository
+        run: |
+          sudo rm -fr "$GITHUB_WORKSPACE" && mkdir "$GITHUB_WORKSPACE"
+      - name: Check out repository code
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0  # otherwise we will have no version info
+      - name: Check docker clickhouse/clickhouse-server building
+        run: |
+          sudo rm -fr "$TEMP_PATH"
+          cd "$GITHUB_WORKSPACE/tests/ci"
+          python3 build_report_check.py --release-type head
+      - name: Cleanup
+        if: always()
+        run: |
+          docker kill "$(docker ps -q)" ||:
+          docker rm -f "$(docker ps -a -q)" ||:
+          sudo rm -fr "$TEMP_PATH"
 ############################################################################################
 ##################################### BUILD REPORTER #######################################
 ############################################################################################
@@ -3138,6 +3170,7 @@ jobs:
     needs:
       - StyleCheck
       - DockerHubPush
+      - DockerServerImages
       - CheckLabels
       - BuilderReport
       - FastTest
