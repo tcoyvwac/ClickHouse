@@ -68,6 +68,14 @@ def parse_args() -> argparse.Namespace:
         "--bucket-prefix",
         help="if set, then is used as source for deb and tgz files",
     )
+    parser.add_argument("--reports", default=True, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--no-reports",
+        action="store_false",
+        dest="reports",
+        default=argparse.SUPPRESS,
+        help="don't push reports to S3 and github",
+    )
     parser.add_argument("--push", default=True, help=argparse.SUPPRESS)
     parser.add_argument(
         "--no-push-images",
