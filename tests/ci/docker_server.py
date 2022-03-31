@@ -8,9 +8,17 @@ import subprocess
 from os import path as p, makedirs
 from typing import List, Tuple
 
+from github import Github
+
+from clickhouse_helper import ClickHouseHelper, prepare_tests_results_for_clickhouse
+from commit_status_helper import post_commit_status
 from docker_images_check import DockerImage
-from env_helper import RUNNER_TEMP
-from get_robot_token import get_parameter_from_ssm
+from env_helper import CI, RUNNER_TEMP, S3_BUILDS_BUCKET
+from get_robot_token import get_best_robot_token, get_parameter_from_ssm
+from pr_info import PRInfo
+from s3_helper import S3Helper
+from stopwatch import Stopwatch
+from upload_result_helper import upload_results
 from version_helper import get_version_from_repo, validate_version
 
 TEMP_PATH = p.join(RUNNER_TEMP, "docker_images_check")
@@ -22,14 +30,6 @@ class DelOS(argparse.Action):
         no_build = self.dest[3:] if self.dest.startswith("no_") else self.dest
         if no_build in namespace.os:
             namespace.os.remove(no_build)
-
-
-def version_arg(version: str) -> str:
-    try:
-        validate_version(version)
-        return version
-    except ValueError as e:
-        raise argparse.ArgumentTypeError(e)
 
 
 def parse_args() -> argparse.Namespace:
@@ -93,6 +93,68 @@ def parse_args() -> argparse.Namespace:
     )
 
     return parser.parse_args()
+
+
+def version_arg(version: str) -> str:
+    try:
+        validate_version(version)
+        return version
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(e)
+
+
+def gen_tags(version: str, release_type: str) -> List[str]:
+    """
+    22.2.2.2 + latest:
+    - latest
+    - 22
+    - 22.2
+    - 22.2.2
+    - 22.2.2.2
+    22.2.2.2 + major:
+    - 22
+    - 22.2
+    - 22.2.2
+    - 22.2.2.2
+    22.2.2.2 + minor:
+    - 22.2
+    - 22.2.2
+    - 22.2.2.2
+    22.2.2.2 + patch:
+    - 22.2.2
+    - 22.2.2.2
+    22.2.2.2 + head:
+    - head
+    """
+    parts = version.split(".")
+    tags = []
+    if release_type == "latest":
+        tags.append(release_type)
+        for i in range(len(parts)):
+            tags.append(".".join(parts[: i + 1]))
+    elif release_type == "major":
+        for i in range(len(parts)):
+            tags.append(".".join(parts[: i + 1]))
+    elif release_type == "minor":
+        for i in range(1, len(parts)):
+            tags.append(".".join(parts[: i + 1]))
+    elif release_type == "patch":
+        for i in range(2, len(parts)):
+            tags.append(".".join(parts[: i + 1]))
+    elif release_type == "head":
+        tags.append(release_type)
+    else:
+        raise ValueError(f"{release_type} is not valid release part")
+    return tags
+
+
+def buildx_args(bucket_prefix: str, arch: str) -> List[str]:
+    args = [f"--platform=linux/{arch}"]
+    if bucket_prefix:
+        url = p.join(bucket_prefix, BUCKETS[arch])  # to prevent a double //
+        args.append(f"--build-arg=REPOSITORY='{url}'")
+        args.append(f"--build-arg=deb_location_url='{url}'")
+    return args
 
 
 def build_and_push_image(
@@ -175,64 +237,23 @@ def build_and_push_image(
     return result
 
 
-def buildx_args(bucket_prefix: str, arch: str) -> List[str]:
-    args = [f"--platform=linux/{arch}"]
-    if bucket_prefix:
-        url = p.join(bucket_prefix, BUCKETS[arch])  # to prevent a double //
-        args.append(f"--build-arg=REPOSITORY='{url}'")
-        args.append(f"--build-arg=deb_location_url='{url}'")
-    return args
-
-
-def gen_tags(version: str, release_type: str) -> List[str]:
-    """
-    22.2.2.2 + latest:
-    - latest
-    - 22
-    - 22.2
-    - 22.2.2
-    - 22.2.2.2
-    22.2.2.2 + major:
-    - 22
-    - 22.2
-    - 22.2.2
-    - 22.2.2.2
-    22.2.2.2 + minor:
-    - 22.2
-    - 22.2.2
-    - 22.2.2.2
-    22.2.2.2 + patch:
-    - 22.2.2
-    - 22.2.2.2
-    22.2.2.2 + head:
-    - head
-    """
-    parts = version.split(".")
-    tags = []
-    if release_type == "latest":
-        tags.append(release_type)
-        for i in range(len(parts)):
-            tags.append(".".join(parts[: i + 1]))
-    elif release_type == "major":
-        for i in range(len(parts)):
-            tags.append(".".join(parts[: i + 1]))
-    elif release_type == "minor":
-        for i in range(1, len(parts)):
-            tags.append(".".join(parts[: i + 1]))
-    elif release_type == "patch":
-        for i in range(2, len(parts)):
-            tags.append(".".join(parts[: i + 1]))
-    elif release_type == "head":
-        tags.append(release_type)
-    else:
-        raise ValueError(f"{release_type} is not valid release part")
-    return tags
-
-
 def main():
     logging.basicConfig(level=logging.INFO)
+    stopwatch = Stopwatch()
     makedirs(TEMP_PATH, exist_ok=True)
+
     args = parse_args()
+    image = DockerImage(args.image_path, args.image_repo, False)
+    tags = gen_tags(args.version, args.release_type)
+    NAME = f"Check {image.repo} docker image building (actions)"
+    pr_info = None
+    if CI:
+        pr_info = PRInfo()
+        args.bucket_prefix = (
+            f"https://s3.amazonaws.com/{S3_BUILDS_BUCKET}/"
+            f"{pr_info.number}/{pr_info.sha}"
+        )
+
     if args.push:
         subprocess.check_output(  # pylint: disable=unexpected-keyword-arg
             "docker login --username 'robotclickhouse' --password-stdin",
@@ -240,14 +261,51 @@ def main():
             encoding="utf-8",
             shell=True,
         )
-    image = DockerImage(args.image_path, args.image_repo, False)
-    tags = gen_tags(args.version, args.release_type)
+        NAME = f"Build and push {image.repo} docker image (actions)"
+
     logging.info("Following tags will be created: %s", ", ".join(tags))
+    status = "success"
+    test_results = []  # type: List[Tuple[str, str]]
     for os in args.os:
         for tag in tags:
-            build_and_push_image(
-                image, args.push, args.bucket_prefix, os, tag, args.version
+            test_results.extend(
+                build_and_push_image(
+                    image, args.push, args.bucket_prefix, os, tag, args.version
+                )
             )
+            if test_results[-1][1] != "OK":
+                status = "failure"
+
+    pr_info = pr_info or PRInfo()
+    s3_helper = S3Helper("https://s3.amazonaws.com")
+
+    url = upload_results(s3_helper, pr_info.number, pr_info.sha, test_results, [], NAME)
+
+    print(f"::notice ::Report url: {url}")
+    print(f'::set-output name=url_output::"{url}"')
+
+    if not args.reports:
+        return
+
+    description = f"Processed tags: {', '.join(tags)}"
+
+    if len(description) >= 140:
+        description = description[:136] + "..."
+
+    gh = Github(get_best_robot_token())
+    post_commit_status(gh, pr_info.sha, NAME, description, status, url)
+
+    prepared_events = prepare_tests_results_for_clickhouse(
+        pr_info,
+        test_results,
+        status,
+        stopwatch.duration_seconds,
+        stopwatch.start_time_str,
+        url,
+        NAME,
+    )
+    ch_helper = ClickHouseHelper()
+    ch_helper.insert_events_into(db="gh-data", table="checks", events=prepared_events)
 
 
 if __name__ == "__main__":
